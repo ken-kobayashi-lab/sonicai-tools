@@ -1,5 +1,5 @@
+
 import io
-import math
 import os
 from copy import copy
 from datetime import date
@@ -21,10 +21,9 @@ template_path = os.path.join(current_dir, "template.pptx")
 quotation_template_path = os.path.join(current_dir, "quotation_template.xlsx")
 
 # ==========================================
-# 1. 共通ロジック
+# 1. session_state 初期化
 # ==========================================
 def init_session_state():
-    """初期値を session_state に設定"""
     defaults = {
         "my_company": "株式会社SonicAI",
         "my_zip": "108-0075",
@@ -38,11 +37,48 @@ def init_session_state():
             st.session_state[key] = value
 
 
+DEFAULT_PRODUCT_MASTER = [
+    {"商品名": "AI検査装置A", "単位": "式", "単価": 500000, "備考": ""},
+    {"商品名": "AI検査装置B", "単位": "式", "単価": 800000, "備考": ""},
+    {"商品名": "カメラ", "単位": "台", "単価": 120000, "備考": ""},
+    {"商品名": "レンズ", "単位": "個", "単価": 50000, "備考": ""},
+    {"商品名": "照明", "単位": "台", "単価": 80000, "備考": ""},
+    {"商品名": "制御PC", "単位": "台", "単価": 200000, "備考": ""},
+    {"商品名": "導入設定費", "単位": "式", "単価": 150000, "備考": ""},
+]
+
+DETAIL_START_ROW = 19
+DETAIL_END_ROW = 27
+MAX_DETAIL_ROWS = DETAIL_END_ROW - DETAIL_START_ROW + 1
+
+
+def init_quotation_state():
+    if "product_master_df" not in st.session_state:
+        st.session_state["product_master_df"] = pd.DataFrame(DEFAULT_PRODUCT_MASTER)
+
+    if "quotation_rows" not in st.session_state:
+        st.session_state["quotation_rows"] = [
+            {
+                "マスタ選択": "自由入力",
+                "品名": "",
+                "仕様・備考": "",
+                "数量": 1,
+                "単位": "",
+                "単価": 0,
+                "行値引き": 0,
+            }
+            for _ in range(5)
+        ]
+
+
+# Streamlit UI作成前に必ず初期化
+init_session_state()
+init_quotation_state()
+
+# ==========================================
+# 2. 共通関数
+# ==========================================
 def fill_placeholder(slide, ph_type_idx, content, is_image=False, img_file=None):
-    """
-    スライド上のプレースホルダを上から下、左から右で並べて埋める
-    is_image=True の場合は画像プレースホルダに画像を挿入
-    """
     placeholders = sorted(
         [sh for sh in slide.shapes if sh.is_placeholder],
         key=lambda x: (x.top, x.left)
@@ -75,13 +111,52 @@ def fill_placeholder(slide, ph_type_idx, content, is_image=False, img_file=None)
 
 
 def move_slide(prs, old_index, new_index):
-    """スライド順を移動"""
     xml_slides = prs.slides._sldIdLst
     slide_id = xml_slides[old_index]
     xml_slides.remove(slide_id)
     xml_slides.insert(new_index, slide_id)
 
 
+def safe_int(value):
+    try:
+        if value is None or value == "":
+            return 0
+        return int(round(float(value)))
+    except Exception:
+        return 0
+
+
+def format_yen(value):
+    try:
+        return f"¥{int(round(float(value))):,}"
+    except Exception:
+        return "¥0"
+
+
+def write_wrapped_text(ws, cell_ref, value):
+    ws[cell_ref] = value
+    if ws[cell_ref].alignment:
+        ws[cell_ref].alignment = copy(ws[cell_ref].alignment)
+        ws[cell_ref].alignment = Alignment(
+            horizontal=ws[cell_ref].alignment.horizontal,
+            vertical="top",
+            text_rotation=ws[cell_ref].alignment.textRotation,
+            wrap_text=True,
+            shrink_to_fit=ws[cell_ref].alignment.shrinkToFit,
+            indent=ws[cell_ref].alignment.indent,
+        )
+    else:
+        ws[cell_ref].alignment = Alignment(vertical="top", wrap_text=True)
+
+
+def clear_detail_row(ws, row_idx):
+    for col in ["C", "D", "E", "F", "G", "H", "I"]:
+        ws[f"{col}{row_idx}"] = None
+
+
+# ==========================================
+# 3. Report Generator ロジック
+# ==========================================
 def validate_report_data(data):
     required_keys = [
         "company_name",
@@ -112,7 +187,6 @@ def generate_pptx(template_path_arg, data):
 
     prs = Presentation(template_path_arg)
 
-    # 0枚目: 表紙
     fill_placeholder(prs.slides[0], 0, data["company_name"])
     fill_placeholder(prs.slides[0], 1, data["project_name"])
 
@@ -126,15 +200,12 @@ def generate_pptx(template_path_arg, data):
     )
     fill_placeholder(prs.slides[0], 2, creator_info)
 
-    # 1枚目: 条件 / 構成図
     fill_placeholder(prs.slides[1], 1, data["cond"])
     if data["setup_img"] is not None:
         fill_placeholder(prs.slides[1], 0, "", is_image=True, img_file=data["setup_img"])
 
-    # 2枚目: 結果
     fill_placeholder(prs.slides[2], 1, data["res"])
 
-    # 3枚目以降: 画像一覧
     images = data["uploaded_images"]
     comments = data["image_comments"]
 
@@ -149,12 +220,10 @@ def generate_pptx(template_path_arg, data):
         if i > 0:
             move_slide(prs, len(prs.slides) - 1, 3 + (i // 2))
 
-        # 左側
         fill_placeholder(slide, 0, "", is_image=True, img_file=images[i])
         if len(comments) > i:
             fill_placeholder(slide, 1, comments[i])
 
-        # 右側
         if i + 1 < len(images):
             fill_placeholder(slide, 1, "", is_image=True, img_file=images[i + 1])
             if len(comments) > i + 1:
@@ -162,7 +231,6 @@ def generate_pptx(template_path_arg, data):
         else:
             fill_placeholder(slide, 2, "")
 
-    # 最終ページ: まとめ
     fill_placeholder(prs.slides[-1], 1, data["summ"])
 
     ppt_io = io.BytesIO()
@@ -172,58 +240,8 @@ def generate_pptx(template_path_arg, data):
 
 
 # ==========================================
-# 2. 見積書ロジック
+# 4. Quotation Generator ロジック
 # ==========================================
-DEFAULT_PRODUCT_MASTER = [
-    {"商品名": "AI検査装置A", "単位": "式", "単価": 500000, "備考": ""},
-    {"商品名": "AI検査装置B", "単位": "式", "単価": 800000, "備考": ""},
-    {"商品名": "カメラ", "単位": "台", "単価": 120000, "備考": ""},
-    {"商品名": "レンズ", "単位": "個", "単価": 50000, "備考": ""},
-    {"商品名": "照明", "単位": "台", "単価": 80000, "備考": ""},
-    {"商品名": "制御PC", "単位": "台", "単価": 200000, "備考": ""},
-    {"商品名": "導入設定費", "単位": "式", "単価": 150000, "備考": ""},
-]
-
-DETAIL_START_ROW = 19
-DETAIL_END_ROW = 27
-MAX_DETAIL_ROWS = DETAIL_END_ROW - DETAIL_START_ROW + 1
-
-
-def init_quotation_state():
-    if "product_master_df" not in st.session_state:
-        st.session_state.product_master_df = pd.DataFrame(DEFAULT_PRODUCT_MASTER)
-
-    if "quotation_rows" not in st.session_state:
-        st.session_state.quotation_rows = [
-            {
-                "マスタ選択": "自由入力",
-                "品名": "",
-                "仕様・備考": "",
-                "数量": 1,
-                "単位": "",
-                "単価": 0,
-                "行値引き": 0,
-            }
-            for _ in range(5)
-        ]
-
-
-def format_yen(value):
-    try:
-        return f"¥{int(round(float(value))):,}"
-    except Exception:
-        return "¥0"
-
-
-def safe_int(value):
-    try:
-        if value is None or value == "":
-            return 0
-        return int(round(float(value)))
-    except Exception:
-        return 0
-
-
 def apply_product_master_to_row(row_data, selected_name, product_master_df):
     if selected_name == "自由入力":
         row_data["マスタ選択"] = "自由入力"
@@ -251,27 +269,6 @@ def calculate_row_amount(row):
     return max(qty * unit_price - line_discount, 0)
 
 
-def clear_detail_row(ws, row_idx):
-    for col in ["C", "D", "E", "F", "G", "H", "I"]:
-        ws[f"{col}{row_idx}"] = None
-
-
-def write_wrapped_text(ws, cell_ref, value):
-    ws[cell_ref] = value
-    if ws[cell_ref].alignment:
-        ws[cell_ref].alignment = copy(ws[cell_ref].alignment)
-        ws[cell_ref].alignment = Alignment(
-            horizontal=ws[cell_ref].alignment.horizontal,
-            vertical="top",
-            text_rotation=ws[cell_ref].alignment.textRotation,
-            wrap_text=True,
-            shrink_to_fit=ws[cell_ref].alignment.shrinkToFit,
-            indent=ws[cell_ref].alignment.indent
-        )
-    else:
-        ws[cell_ref].alignment = Alignment(vertical="top", wrap_text=True)
-
-
 def generate_quotation_excel(data):
     if not os.path.exists(quotation_template_path):
         raise FileNotFoundError(
@@ -284,19 +281,15 @@ def generate_quotation_excel(data):
 
     ws = wb["見積書"]
 
-    # 上部情報
     ws["C6"] = data["customer_name"]
     ws["H6"] = data["quote_no"]
     ws["C7"] = data["subject"]
     ws["H7"] = data["quote_date_str"]
 
-    # 既存テンプレートの上部追記候補
-    # 必要に応じてセル位置は後で調整してください
     ws["C9"] = data["payment_terms"]
     ws["C10"] = data["delivery_terms"]
     ws["C11"] = data["valid_until"]
 
-    # 発行者情報
     ws["G10"] = data["my_company"]
     ws["G11"] = f"〒{data['my_zip']}"
     ws["G12"] = data["my_address"]
@@ -304,23 +297,14 @@ def generate_quotation_excel(data):
     ws["G14"] = f"mail: {data['my_mail']}"
     ws["G15"] = f"TEL: {data['my_tel']}"
 
-    # 明細クリア
     for r in range(DETAIL_START_ROW, DETAIL_END_ROW + 1):
         clear_detail_row(ws, r)
 
-    # 明細書き込み
     detail_rows = data["detail_rows"][:MAX_DETAIL_ROWS]
     for idx, item in enumerate(detail_rows):
         row_no = DETAIL_START_ROW + idx
         row_amount = calculate_row_amount(item)
 
-        # 既存フォーマット前提
-        # C: 品名
-        # D~E: 備考/仕様
-        # F: 数量
-        # G: 単位
-        # H: 単価
-        # I: 金額
         ws[f"C{row_no}"] = item.get("品名", "")
         write_wrapped_text(ws, f"D{row_no}", item.get("仕様・備考", ""))
         ws[f"F{row_no}"] = safe_int(item.get("数量", 0))
@@ -328,22 +312,19 @@ def generate_quotation_excel(data):
         ws[f"H{row_no}"] = safe_int(item.get("単価", 0))
         ws[f"I{row_no}"] = row_amount
 
-    # 集計
     subtotal = safe_int(data["subtotal_before_global_discount"])
     global_discount = safe_int(data["global_discount"])
     subtotal_after_discount = max(subtotal - global_discount, 0)
     tax_amount = safe_int(data["tax_amount"])
     total_including_tax = safe_int(data["total_including_tax"])
 
-    # 既存フォーマット前提
     ws["I28"] = subtotal_after_discount
     ws["I29"] = tax_amount
     ws["I30"] = total_including_tax
 
-    # 税抜表示のまま
+    # 税抜合計表示
     ws["C15"] = subtotal_after_discount
 
-    # 備考
     remarks_lines = [
         f"支払条件：{data['payment_terms']}" if data["payment_terms"] else "",
         f"納期：{data['delivery_terms']}" if data["delivery_terms"] else "",
@@ -361,10 +342,8 @@ def generate_quotation_excel(data):
 
 
 # ==========================================
-# 3. 初期設定
+# 5. Streamlit 基本設定
 # ==========================================
-init_quotation_state()
-
 st.set_page_config(page_title="SonicAI AI Tools", layout="wide")
 
 st.markdown("""
@@ -399,25 +378,6 @@ st.markdown("""
         border-radius: 10px;
         border: none;
     }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        background-color: #f1f3f6;
-        padding: 5px;
-        border-radius: 12px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        height: 40px;
-        border-radius: 8px;
-        background-color: transparent;
-        color: #555;
-        font-weight: 500;
-        border: none !important;
-    }
-    .stTabs [aria-selected="true"] {
-        background-color: white !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        color: #ff6600 !important;
-    }
     .camera-info-card {
         background-color: #1e2630;
         color: #ffffff;
@@ -449,7 +409,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 4. サイドバー
+# 6. サイドバー
 # ==========================================
 with st.sidebar:
     st.markdown('<div class="logo-container">', unsafe_allow_html=True)
@@ -487,7 +447,7 @@ with st.sidebar:
     st.caption("SonicAI Inc. v1.8")
 
 # ==========================================
-# 5. メインコンテンツ
+# 7. メインコンテンツ
 # ==========================================
 if current_tab == "Manual":
     st.markdown("<h1 style='color: #6c757d;'>📖 User Manual</h1>", unsafe_allow_html=True)
@@ -519,18 +479,18 @@ if current_tab == "Manual":
         """)
 
     st.divider()
-    st.warning("⚠️ **注意**: 本ツールはオフライン動作を前提としています。ライブラリの更新時以外はネット接続不要です。")
+    st.warning("⚠️ 本ツールはオフライン動作を前提としています。ライブラリ更新時以外はネット接続不要です。")
 
 elif current_tab == "Settings":
     st.markdown("<h1 style='color: #6c757d;'>👤 Settings Preview</h1>", unsafe_allow_html=True)
     st.write("サイドバーで入力した情報は、以下の形式で出力ファイルに反映されます。")
     st.code(
-        f"{st.session_state.my_company}\n"
-        f"〒{st.session_state.my_zip}\n"
-        f"{st.session_state.my_address}\n"
-        f"{st.session_state.my_name}\n"
-        f"mail：{st.session_state.my_mail}\n"
-        f"TEL：{st.session_state.my_tel}"
+        f"{st.session_state.get('my_company', '株式会社SonicAI')}\n"
+        f"〒{st.session_state.get('my_zip', '108-0075')}\n"
+        f"{st.session_state.get('my_address', '東京都港区港南2-16-1 7F Spaces品川')}\n"
+        f"{st.session_state.get('my_name', '小林賢正')}\n"
+        f"mail：{st.session_state.get('my_mail', 'ken-kobayashi@sonicai.jp')}\n"
+        f"TEL：{st.session_state.get('my_tel', '080-8044-3236')}"
     )
 
 elif tool_choice == "📄 Report Generator":
@@ -579,12 +539,12 @@ elif tool_choice == "📄 Report Generator":
                 data = {
                     "company_name": c_name,
                     "project_name": p_name,
-                    "my_company": st.session_state.my_company,
-                    "my_zip": st.session_state.my_zip,
-                    "my_address": st.session_state.my_address,
-                    "my_name": st.session_state.my_name,
-                    "my_mail": st.session_state.my_mail,
-                    "my_tel": st.session_state.my_tel,
+                    "my_company": st.session_state.get("my_company", "株式会社SonicAI"),
+                    "my_zip": st.session_state.get("my_zip", "108-0075"),
+                    "my_address": st.session_state.get("my_address", "東京都港区港南2-16-1 7F Spaces品川"),
+                    "my_name": st.session_state.get("my_name", "小林賢正"),
+                    "my_mail": st.session_state.get("my_mail", "ken-kobayashi@sonicai.jp"),
+                    "my_tel": st.session_state.get("my_tel", "080-8044-3236"),
                     "cond": cond,
                     "setup_img": setup_img,
                     "res": res,
@@ -640,7 +600,7 @@ elif tool_choice == "💰 Quotation Generator":
     st.subheader("商品マスタ")
     st.caption("ここで編集した商品マスタは、このセッション中の見積入力に反映されます。")
     product_master_df = st.data_editor(
-        st.session_state.product_master_df,
+        st.session_state["product_master_df"],
         num_rows="dynamic",
         use_container_width=True,
         key="product_master_editor",
@@ -651,7 +611,7 @@ elif tool_choice == "💰 Quotation Generator":
             "備考": st.column_config.TextColumn("備考"),
         }
     )
-    st.session_state.product_master_df = product_master_df.copy()
+    st.session_state["product_master_df"] = product_master_df.copy()
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -661,12 +621,12 @@ elif tool_choice == "💰 Quotation Generator":
         "入力行数",
         min_value=1,
         max_value=MAX_DETAIL_ROWS,
-        value=min(len(st.session_state.quotation_rows), MAX_DETAIL_ROWS),
+        value=min(len(st.session_state["quotation_rows"]), MAX_DETAIL_ROWS),
         step=1
     )
 
-    while len(st.session_state.quotation_rows) < detail_row_count:
-        st.session_state.quotation_rows.append(
+    while len(st.session_state["quotation_rows"]) < detail_row_count:
+        st.session_state["quotation_rows"].append(
             {
                 "マスタ選択": "自由入力",
                 "品名": "",
@@ -678,7 +638,7 @@ elif tool_choice == "💰 Quotation Generator":
             }
         )
 
-    st.session_state.quotation_rows = st.session_state.quotation_rows[:detail_row_count]
+    st.session_state["quotation_rows"] = st.session_state["quotation_rows"][:detail_row_count]
 
     product_names = ["自由入力"]
     if not product_master_df.empty and "商品名" in product_master_df.columns:
@@ -686,10 +646,9 @@ elif tool_choice == "💰 Quotation Generator":
 
     detail_rows = []
     for i in range(detail_row_count):
-        base = st.session_state.quotation_rows[i]
+        base = st.session_state["quotation_rows"][i]
 
-        row_box = st.container()
-        with row_box:
+        with st.container():
             st.markdown(f"**明細 {i + 1}**")
             c1, c2, c3, c4, c5, c6, c7 = st.columns([1.4, 2.0, 1.2, 1.0, 1.2, 1.2, 1.3])
 
@@ -727,7 +686,7 @@ elif tool_choice == "💰 Quotation Generator":
             )
 
             detail_rows.append(row_data)
-            st.session_state.quotation_rows[i] = row_data
+            st.session_state["quotation_rows"][i] = row_data
             st.write("---")
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -781,12 +740,12 @@ elif tool_choice == "💰 Quotation Generator":
                 "global_discount": global_discount,
                 "tax_amount": tax_amount,
                 "total_including_tax": total_including_tax,
-                "my_company": st.session_state.my_company,
-                "my_zip": st.session_state.my_zip,
-                "my_address": st.session_state.my_address,
-                "my_name": st.session_state.my_name,
-                "my_mail": st.session_state.my_mail,
-                "my_tel": st.session_state.my_tel,
+                "my_company": st.session_state.get("my_company", "株式会社SonicAI"),
+                "my_zip": st.session_state.get("my_zip", "108-0075"),
+                "my_address": st.session_state.get("my_address", "東京都港区港南2-16-1 7F Spaces品川"),
+                "my_name": st.session_state.get("my_name", "小林賢正"),
+                "my_mail": st.session_state.get("my_mail", "ken-kobayashi@sonicai.jp"),
+                "my_tel": st.session_state.get("my_tel", "080-8044-3236"),
             }
 
             generated_excel = generate_quotation_excel(quote_data)
