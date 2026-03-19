@@ -28,10 +28,28 @@ MAX_DETAIL_ROWS = 3
 MAX_MASTER_ROWS = 10
 
 DEFAULT_QUOTE_NO = "SA-000010"
-DEFAULT_PAYMENT_TERMS = "月末締め翌月末払い"
-DEFAULT_DELIVERY_TERMS = "ご注文後6〜8週間"
+DEFAULT_PAYMENT_TERMS = "納品後、末締め翌月末支払い（振込）"
+DEFAULT_DELIVERY_TERMS = "ご注文後3週間〜6週間"
 DEFAULT_VALID_UNTIL = "発行日より30日"
-DEFAULT_REMARKS = "御見積条件等ございましたらご連絡ください。"
+DEFAULT_REMARKS = """納品方法： 弊社指定の配送業者による配送（軒先渡し）となります。
+送料：本見積に含みます。
+検収条件：製品の納入をもって検収完了（所有権移転）とさせていただきます。
+返品・キャンセル： 受注生産品のため、ご発注後のキャンセル・返品はお受けできません。
+製品保証に関して：
+①無償保証期間： 納品日より2年間とします。
+　保証範囲（通常運用）:
+　通常の運用によって故障した場合に限り、無償で修理または交換いたします。
+　対応方法：対象部品の送付もしくは技術スタッフの派遣により交換
+　保証の適用除外（有償対応）:
+　以下の場合は、保証期間内であっても有償対応となります。
+　・お客様の故意・過失による破損、落下、水没、改造、分解など。
+　・火災、地震、落雷などの天災地変による故障。
+　・経年劣化する消耗部品（バッテリー、フィルター等）の交換。
+　・指定外の電源電圧や使用環境（高温・多湿等）での使用による故障。
+製品の変更:
+修理が困難な場合、同等機能を持つ代替品への交換とさせていただく場合がございます。
+
+その他：電源タップ等の配線部材、およびPC等の周辺機器は本見積に含まれません。"""
 
 DEFAULT_PRODUCT_MASTER = [
     {"商品名": "SonicAI one", "単位": "式", "単価": 3000000},
@@ -39,6 +57,24 @@ DEFAULT_PRODUCT_MASTER = [
     {"商品名": "初期設定費", "単位": "式", "単価": 150000},
     {"商品名": "搬入・設置費", "単位": "式", "単価": 100000},
 ]
+
+CONTACT_MASTER = {
+    "小林賢正": {
+        "name": "小林賢正",
+        "mail": "ken-kobayashi@sonicai.jp",
+        "tel": "080-8044-3236",
+    },
+    "田中寛之": {
+        "name": "田中寛之",
+        "mail": "hiro-tanaka@sonicai.jp",
+        "tel": "080-8044-3236",
+    },
+    "nisikawa": {
+        "name": "nisikawa",
+        "mail": "hiro-tanaka@sonicai.jp",
+        "tel": "080-8044-3236",
+    },
+}
 
 # ==========================================
 # 2. session_state 初期化
@@ -51,6 +87,7 @@ def init_session_state():
         "my_name": "小林賢正",
         "my_mail": "ken-kobayashi@sonicai.jp",
         "my_tel": "080-8044-3236",
+        "selected_contact": "小林賢正",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -65,9 +102,19 @@ def init_session_state():
     if "quotation_rows" not in st.session_state:
         st.session_state["quotation_rows"] = [
             {"選択商品": "SonicAI one", "商品名": "SonicAI one", "数量": 1, "単位": "式", "単価": 3000000},
-            {"選択商品": "貴社特別値引き", "商品名": "貴社特別値引き", "数量": 1, "単位": "式", "単価": -100000},
+            {"選択商品": "", "商品名": "", "数量": 1, "単位": "", "単価": 0},
             {"選択商品": "", "商品名": "", "数量": 1, "単位": "", "単価": 0},
         ]
+
+
+def apply_contact_from_master(contact_key: str):
+    contact = CONTACT_MASTER.get(contact_key)
+    if not contact:
+        return
+    st.session_state["selected_contact"] = contact_key
+    st.session_state["my_name"] = contact["name"]
+    st.session_state["my_mail"] = contact["mail"]
+    st.session_state["my_tel"] = contact["tel"]
 
 
 init_session_state()
@@ -108,7 +155,7 @@ def write_wrapped_text(ws, cell_ref, value):
 
 
 def clear_detail_row(ws, row_idx):
-    # B:E は結合セルなので左上 B のみ触る
+    # B:E が結合セルの想定
     ws[f"B{row_idx}"] = None
     ws[f"F{row_idx}"] = None
     ws[f"G{row_idx}"] = None
@@ -278,23 +325,24 @@ def generate_quotation_excel(data):
 
     ws = wb["見積書"]
 
-    # 上部
-    ws["B6"] = data["customer_name"]   # 結合セル左上
-    ws["H6"] = data["quote_no"]
-    ws["C7"] = data["subject"]
-    ws["H7"] = data["quote_date_str"]
+    # 客先会社名（既存位置維持）
+    ws["B6"] = data["customer_name"]
 
-    ws["C9"] = data["payment_terms"]
-    ws["C10"] = data["delivery_terms"]
-    ws["C11"] = data["valid_until"]
+    # 指定セル
+    ws["I1"] = data["quote_date_str"]
+    ws["I2"] = data["quote_no"]
+    ws["H3"] = data["payment_terms"]
+    ws["C10"] = data["subject"]
+    ws["C11"] = data["delivery_terms"]
+    ws["C13"] = data["valid_until"]
 
     # 発行者情報
-    ws["G10"] = data["my_company"]
-    ws["G11"] = f"〒{data['my_zip']}"
-    ws["G12"] = data["my_address"]
-    ws["G13"] = data["my_name"]
-    ws["G14"] = f"mail: {data['my_mail']}"
-    ws["G15"] = f"TEL: {data['my_tel']}"
+    ws["H8"] = data["my_company"]
+    ws["H10"] = f"〒{data['my_zip']}"
+    ws["H11"] = data["my_address"]
+    ws["H12"] = data["my_name"]
+    ws["H13"] = f"mail：{data['my_mail']}"
+    ws["H14"] = f"TEL：{data['my_tel']}"
 
     # 明細クリア
     for r in range(DETAIL_START_ROW, DETAIL_END_ROW + 1):
@@ -306,7 +354,7 @@ def generate_quotation_excel(data):
         row_no = DETAIL_START_ROW + idx
         row_amount = calculate_quote_row_amount(item)
 
-        write_wrapped_text(ws, f"B{row_no}", item.get("商品名", ""))  # B:E 結合セル左上
+        write_wrapped_text(ws, f"B{row_no}", item.get("商品名", ""))
         ws[f"F{row_no}"] = safe_int(item.get("数量", 0))
         ws[f"G{row_no}"] = item.get("単位", "")
         ws[f"H{row_no}"] = safe_int(item.get("単価", 0))
@@ -323,14 +371,8 @@ def generate_quotation_excel(data):
     # 税抜合計表示
     ws["C15"] = subtotal
 
-    remarks_lines = [
-        f"支払条件：{data['payment_terms']}" if data["payment_terms"] else "",
-        f"納期：{data['delivery_terms']}" if data["delivery_terms"] else "",
-        f"有効期限：{data['valid_until']}" if data["valid_until"] else "",
-        data["remarks"] if data["remarks"] else "",
-    ]
-    remarks_text = "\n".join([x for x in remarks_lines if x])
-    write_wrapped_text(ws, "B33", remarks_text)  # 結合セル左上
+    # 備考欄
+    write_wrapped_text(ws, "B33", data["remarks"])
 
     output = io.BytesIO()
     wb.save(output)
@@ -431,6 +473,14 @@ with st.sidebar:
 
     elif current_tab == "Settings":
         st.subheader("👤 Creator Info")
+        selected_contact = st.selectbox(
+            "担当者マスタ",
+            options=list(CONTACT_MASTER.keys()),
+            index=list(CONTACT_MASTER.keys()).index(st.session_state.get("selected_contact", "小林賢正")),
+            key="selected_contact",
+        )
+        apply_contact_from_master(selected_contact)
+
         st.text_input("Company", key="my_company")
         st.text_input("Zip Code", key="my_zip")
         st.text_area("Address", key="my_address", height=80)
@@ -440,7 +490,7 @@ with st.sidebar:
         st.caption("Settings are used for report / quotation output.")
 
     st.write("---")
-    st.caption("SonicAI Inc. v2.0")
+    st.caption("SonicAI Inc. v2.1")
 
 # ==========================================
 # 8. メインコンテンツ
@@ -492,7 +542,7 @@ elif current_tab == "Settings":
 elif tool_choice == "📄 Report Generator":
     st.markdown("<h1 style='color: #ff6600;'>📄 Report Generator</h1>", unsafe_allow_html=True)
 
-    c_name = st.text_input("客先会社名", value="〇〇株式会社 御中")
+    c_name = st.text_input("客先会社名", value="〇〇株式会社")
     p_name = st.text_input("案件名", value="AI外観検査 導入可否検証")
 
     st.write("---")
@@ -575,7 +625,7 @@ elif tool_choice == "💰 Quotation Generator":
     q_col1, q_col2, q_col3 = st.columns(3)
 
     with q_col1:
-        customer_name = st.text_input("客先会社名", value="〇〇株式会社 御中")
+        customer_name = st.text_input("客先会社名", value="〇〇株式会社")
         subject = st.text_input("件名", value="SonicAI one お見積り")
         quote_no = st.text_input("見積番号", value=DEFAULT_QUOTE_NO)
 
@@ -587,7 +637,7 @@ elif tool_choice == "💰 Quotation Generator":
     with q_col3:
         delivery_terms = st.text_input("納期", value=DEFAULT_DELIVERY_TERMS)
         tax_rate_percent = st.number_input("消費税率(%)", min_value=0.0, max_value=100.0, value=10.0, step=0.1)
-        remarks = st.text_input("備考", value=DEFAULT_REMARKS)
+        remarks = st.text_area("備考", value=DEFAULT_REMARKS, height=260)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
