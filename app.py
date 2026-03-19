@@ -1,4 +1,3 @@
-
 import io
 import os
 from copy import copy
@@ -21,7 +20,28 @@ template_path = os.path.join(current_dir, "template.pptx")
 quotation_template_path = os.path.join(current_dir, "quotation_template.xlsx")
 
 # ==========================================
-# 1. session_state 初期化
+# 1. 定数
+# ==========================================
+DETAIL_START_ROW = 19
+DETAIL_END_ROW = 27
+MAX_DETAIL_ROWS = 3
+MAX_MASTER_ROWS = 10
+
+DEFAULT_QUOTE_NO = "SA-000010"
+DEFAULT_PAYMENT_TERMS = "月末締め翌月末払い"
+DEFAULT_DELIVERY_TERMS = "ご注文後6〜8週間"
+DEFAULT_VALID_UNTIL = "発行日より30日"
+DEFAULT_REMARKS = "御見積条件等ございましたらご連絡ください。"
+
+DEFAULT_PRODUCT_MASTER = [
+    {"商品名": "SonicAI one", "単位": "式", "単価": 3000000},
+    {"商品名": "貴社特別値引き", "単位": "式", "単価": -100000},
+    {"商品名": "初期設定費", "単位": "式", "単価": 150000},
+    {"商品名": "搬入・設置費", "単位": "式", "単価": 100000},
+]
+
+# ==========================================
+# 2. session_state 初期化
 # ==========================================
 def init_session_state():
     defaults = {
@@ -36,87 +56,25 @@ def init_session_state():
         if key not in st.session_state:
             st.session_state[key] = value
 
-
-DEFAULT_PRODUCT_MASTER = [
-    {"商品名": "AI検査装置A", "単位": "式", "単価": 500000, "備考": ""},
-    {"商品名": "AI検査装置B", "単位": "式", "単価": 800000, "備考": ""},
-    {"商品名": "カメラ", "単位": "台", "単価": 120000, "備考": ""},
-    {"商品名": "レンズ", "単位": "個", "単価": 50000, "備考": ""},
-    {"商品名": "照明", "単位": "台", "単価": 80000, "備考": ""},
-    {"商品名": "制御PC", "単位": "台", "単価": 200000, "備考": ""},
-    {"商品名": "導入設定費", "単位": "式", "単価": 150000, "備考": ""},
-]
-
-DETAIL_START_ROW = 19
-DETAIL_END_ROW = 27
-MAX_DETAIL_ROWS = DETAIL_END_ROW - DETAIL_START_ROW + 1
-
-
-def init_quotation_state():
     if "product_master_df" not in st.session_state:
-        st.session_state["product_master_df"] = pd.DataFrame(DEFAULT_PRODUCT_MASTER)
+        base_rows = DEFAULT_PRODUCT_MASTER.copy()
+        while len(base_rows) < MAX_MASTER_ROWS:
+            base_rows.append({"商品名": "", "単位": "", "単価": 0})
+        st.session_state["product_master_df"] = pd.DataFrame(base_rows)
 
     if "quotation_rows" not in st.session_state:
         st.session_state["quotation_rows"] = [
-            {
-                "マスタ選択": "自由入力",
-                "品名": "",
-                "仕様・備考": "",
-                "数量": 1,
-                "単位": "",
-                "単価": 0,
-                "行値引き": 0,
-            }
-            for _ in range(5)
+            {"選択商品": "SonicAI one", "商品名": "SonicAI one", "数量": 1, "単位": "式", "単価": 3000000},
+            {"選択商品": "貴社特別値引き", "商品名": "貴社特別値引き", "数量": 1, "単位": "式", "単価": -100000},
+            {"選択商品": "", "商品名": "", "数量": 1, "単位": "", "単価": 0},
         ]
 
 
-# Streamlit UI作成前に必ず初期化
 init_session_state()
-init_quotation_state()
 
 # ==========================================
-# 2. 共通関数
+# 3. 共通関数
 # ==========================================
-def fill_placeholder(slide, ph_type_idx, content, is_image=False, img_file=None):
-    placeholders = sorted(
-        [sh for sh in slide.shapes if sh.is_placeholder],
-        key=lambda x: (x.top, x.left)
-    )
-
-    text_phs = [
-        sh for sh in placeholders
-        if sh.placeholder_format.type != PP_PLACEHOLDER.PICTURE
-    ]
-    img_phs = [
-        sh for sh in placeholders
-        if sh.placeholder_format.type == PP_PLACEHOLDER.PICTURE
-    ]
-
-    try:
-        if is_image:
-            if img_file and len(img_phs) > ph_type_idx:
-                ph = img_phs[ph_type_idx]
-                ph.insert_picture(img_file)
-                return True
-            return False
-        else:
-            if len(text_phs) > ph_type_idx:
-                ph = text_phs[ph_type_idx]
-                ph.text = str(content)
-                return True
-            return False
-    except Exception:
-        return False
-
-
-def move_slide(prs, old_index, new_index):
-    xml_slides = prs.slides._sldIdLst
-    slide_id = xml_slides[old_index]
-    xml_slides.remove(slide_id)
-    xml_slides.insert(new_index, slide_id)
-
-
 def safe_int(value):
     try:
         if value is None or value == "":
@@ -150,12 +108,48 @@ def write_wrapped_text(ws, cell_ref, value):
 
 
 def clear_detail_row(ws, row_idx):
-    for col in ["C", "D", "E", "F", "G", "H", "I"]:
-        ws[f"{col}{row_idx}"] = None
+    # B:E は結合セルなので左上 B のみ触る
+    ws[f"B{row_idx}"] = None
+    ws[f"F{row_idx}"] = None
+    ws[f"G{row_idx}"] = None
+    ws[f"H{row_idx}"] = None
+    ws[f"I{row_idx}"] = None
 
+
+def fill_placeholder(slide, ph_type_idx, content, is_image=False, img_file=None):
+    placeholders = sorted(
+        [sh for sh in slide.shapes if sh.is_placeholder],
+        key=lambda x: (x.top, x.left)
+    )
+
+    text_phs = [sh for sh in placeholders if sh.placeholder_format.type != PP_PLACEHOLDER.PICTURE]
+    img_phs = [sh for sh in placeholders if sh.placeholder_format.type == PP_PLACEHOLDER.PICTURE]
+
+    try:
+        if is_image:
+            if img_file and len(img_phs) > ph_type_idx:
+                ph = img_phs[ph_type_idx]
+                ph.insert_picture(img_file)
+                return True
+            return False
+        else:
+            if len(text_phs) > ph_type_idx:
+                ph = text_phs[ph_type_idx]
+                ph.text = str(content)
+                return True
+            return False
+    except Exception:
+        return False
+
+
+def move_slide(prs, old_index, new_index):
+    xml_slides = prs.slides._sldIdLst
+    slide_id = xml_slides[old_index]
+    xml_slides.remove(slide_id)
+    xml_slides.insert(new_index, slide_id)
 
 # ==========================================
-# 3. Report Generator ロジック
+# 4. Report Generator
 # ==========================================
 def validate_report_data(data):
     required_keys = [
@@ -238,35 +232,38 @@ def generate_pptx(template_path_arg, data):
     ppt_io.seek(0)
     return ppt_io
 
-
 # ==========================================
-# 4. Quotation Generator ロジック
+# 5. Quotation Generator
 # ==========================================
-def apply_product_master_to_row(row_data, selected_name, product_master_df):
-    if selected_name == "自由入力":
-        row_data["マスタ選択"] = "自由入力"
-        return row_data
+def get_master_names(product_master_df):
+    names = []
+    if not product_master_df.empty and "商品名" in product_master_df.columns:
+        for name in product_master_df["商品名"].fillna("").tolist():
+            s = str(name).strip()
+            if s:
+                names.append(s)
+    return names
 
+
+def apply_master_to_quote_row(selected_name, product_master_df):
     matched = product_master_df[product_master_df["商品名"] == selected_name]
     if matched.empty:
-        row_data["マスタ選択"] = "自由入力"
-        return row_data
+        return {"選択商品": "", "商品名": "", "数量": 1, "単位": "", "単価": 0}
 
-    record = matched.iloc[0]
-    row_data["マスタ選択"] = selected_name
-    row_data["品名"] = record.get("商品名", "")
-    row_data["単位"] = record.get("単位", "")
-    row_data["単価"] = safe_int(record.get("単価", 0))
-    if not row_data.get("仕様・備考"):
-        row_data["仕様・備考"] = record.get("備考", "")
-    return row_data
+    rec = matched.iloc[0]
+    return {
+        "選択商品": selected_name,
+        "商品名": str(rec.get("商品名", "")).strip(),
+        "数量": 1,
+        "単位": str(rec.get("単位", "")).strip(),
+        "単価": safe_int(rec.get("単価", 0)),
+    }
 
 
-def calculate_row_amount(row):
+def calculate_quote_row_amount(row):
     qty = safe_int(row.get("数量", 0))
-    unit_price = safe_int(row.get("単価", 0))
-    line_discount = safe_int(row.get("行値引き", 0))
-    return max(qty * unit_price - line_discount, 0)
+    price = safe_int(row.get("単価", 0))
+    return qty * price
 
 
 def generate_quotation_excel(data):
@@ -281,7 +278,8 @@ def generate_quotation_excel(data):
 
     ws = wb["見積書"]
 
-    ws["C6"] = data["customer_name"]
+    # 上部
+    ws["B6"] = data["customer_name"]   # 結合セル左上
     ws["H6"] = data["quote_no"]
     ws["C7"] = data["subject"]
     ws["H7"] = data["quote_date_str"]
@@ -290,6 +288,7 @@ def generate_quotation_excel(data):
     ws["C10"] = data["delivery_terms"]
     ws["C11"] = data["valid_until"]
 
+    # 発行者情報
     ws["G10"] = data["my_company"]
     ws["G11"] = f"〒{data['my_zip']}"
     ws["G12"] = data["my_address"]
@@ -297,52 +296,49 @@ def generate_quotation_excel(data):
     ws["G14"] = f"mail: {data['my_mail']}"
     ws["G15"] = f"TEL: {data['my_tel']}"
 
+    # 明細クリア
     for r in range(DETAIL_START_ROW, DETAIL_END_ROW + 1):
         clear_detail_row(ws, r)
 
+    # 明細書き込み
     detail_rows = data["detail_rows"][:MAX_DETAIL_ROWS]
     for idx, item in enumerate(detail_rows):
         row_no = DETAIL_START_ROW + idx
-        row_amount = calculate_row_amount(item)
+        row_amount = calculate_quote_row_amount(item)
 
-        ws[f"C{row_no}"] = item.get("品名", "")
-        write_wrapped_text(ws, f"D{row_no}", item.get("仕様・備考", ""))
+        write_wrapped_text(ws, f"B{row_no}", item.get("商品名", ""))  # B:E 結合セル左上
         ws[f"F{row_no}"] = safe_int(item.get("数量", 0))
         ws[f"G{row_no}"] = item.get("単位", "")
         ws[f"H{row_no}"] = safe_int(item.get("単価", 0))
         ws[f"I{row_no}"] = row_amount
 
-    subtotal = safe_int(data["subtotal_before_global_discount"])
-    global_discount = safe_int(data["global_discount"])
-    subtotal_after_discount = max(subtotal - global_discount, 0)
+    subtotal = safe_int(data["subtotal"])
     tax_amount = safe_int(data["tax_amount"])
     total_including_tax = safe_int(data["total_including_tax"])
 
-    ws["I28"] = subtotal_after_discount
+    ws["I28"] = subtotal
     ws["I29"] = tax_amount
     ws["I30"] = total_including_tax
 
     # 税抜合計表示
-    ws["C15"] = subtotal_after_discount
+    ws["C15"] = subtotal
 
     remarks_lines = [
         f"支払条件：{data['payment_terms']}" if data["payment_terms"] else "",
         f"納期：{data['delivery_terms']}" if data["delivery_terms"] else "",
         f"有効期限：{data['valid_until']}" if data["valid_until"] else "",
-        f"全体値引き：{format_yen(global_discount)}" if global_discount else "",
         data["remarks"] if data["remarks"] else "",
     ]
     remarks_text = "\n".join([x for x in remarks_lines if x])
-    write_wrapped_text(ws, "C33", remarks_text)
+    write_wrapped_text(ws, "B33", remarks_text)  # 結合セル左上
 
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
     return output
 
-
 # ==========================================
-# 5. Streamlit 基本設定
+# 6. Streamlit 基本設定
 # ==========================================
 st.set_page_config(page_title="SonicAI AI Tools", layout="wide")
 
@@ -409,7 +405,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 6. サイドバー
+# 7. サイドバー
 # ==========================================
 with st.sidebar:
     st.markdown('<div class="logo-container">', unsafe_allow_html=True)
@@ -444,10 +440,10 @@ with st.sidebar:
         st.caption("Settings are used for report / quotation output.")
 
     st.write("---")
-    st.caption("SonicAI Inc. v1.8")
+    st.caption("SonicAI Inc. v2.0")
 
 # ==========================================
-# 7. メインコンテンツ
+# 8. メインコンテンツ
 # ==========================================
 if current_tab == "Manual":
     st.markdown("<h1 style='color: #6c757d;'>📖 User Manual</h1>", unsafe_allow_html=True)
@@ -472,9 +468,9 @@ if current_tab == "Manual":
 
         st.subheader("💰 見積もり作成ツールの使い方")
         st.markdown("""
-1. **基本情報入力**: 客先名、件名、見積番号、支払条件などを入力します。  
-2. **商品マスタ or 自由入力**: 明細ごとに商品を選ぶか、自由入力で記載します。  
-3. **値引き設定**: 行値引きと全体値引きを入力します。  
+1. **会社名入力**: 基本は客先会社名だけ入れれば見積が成立します。  
+2. **商品マスタ編集**: よく使う見積項目を最大10件まで管理します。  
+3. **見積明細選択**: 最大3行、プルダウンから選ぶだけで自動反映されます。  
 4. **生成**: 「見積書Excelを生成」ボタンでテンプレートに反映されたファイルをダウンロードします。  
         """)
 
@@ -580,147 +576,119 @@ elif tool_choice == "💰 Quotation Generator":
 
     with q_col1:
         customer_name = st.text_input("客先会社名", value="〇〇株式会社 御中")
-        subject = st.text_input("件名", value="AI外観検査装置 お見積り")
-        quote_no = st.text_input("見積番号", value="SONIC-2026-001")
+        subject = st.text_input("件名", value="SonicAI one お見積り")
+        quote_no = st.text_input("見積番号", value=DEFAULT_QUOTE_NO)
 
     with q_col2:
         quote_date = st.date_input("見積日", value=date.today())
-        valid_until = st.text_input("有効期限", value="発行日より30日")
-        payment_terms = st.text_input("支払条件", value="月末締め翌月末払い")
+        valid_until = st.text_input("有効期限", value=DEFAULT_VALID_UNTIL)
+        payment_terms = st.text_input("支払条件", value=DEFAULT_PAYMENT_TERMS)
 
     with q_col3:
-        delivery_terms = st.text_input("納期", value="ご注文後6〜8週間")
+        delivery_terms = st.text_input("納期", value=DEFAULT_DELIVERY_TERMS)
         tax_rate_percent = st.number_input("消費税率(%)", min_value=0.0, max_value=100.0, value=10.0, step=0.1)
-        global_discount = st.number_input("全体値引き(円)", min_value=0, value=0, step=1000)
+        remarks = st.text_input("備考", value=DEFAULT_REMARKS)
 
-    remarks = st.text_area("備考", value="御見積条件等ございましたらご連絡ください。", height=100)
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("商品マスタ")
-    st.caption("ここで編集した商品マスタは、このセッション中の見積入力に反映されます。")
+    st.subheader("商品マスタ（最大10件目安）")
+    st.caption("見積時はここで登録した項目をプルダウンから選択します。負の単価を入れると値引き項目として使えます。")
     product_master_df = st.data_editor(
         st.session_state["product_master_df"],
-        num_rows="dynamic",
+        num_rows="fixed",
         use_container_width=True,
         key="product_master_editor",
         column_config={
-            "商品名": st.column_config.TextColumn("商品名", required=True),
+            "商品名": st.column_config.TextColumn("商品名", required=False),
             "単位": st.column_config.TextColumn("単位"),
-            "単価": st.column_config.NumberColumn("単価", min_value=0, step=1000, format="%d"),
-            "備考": st.column_config.TextColumn("備考"),
+            "単価": st.column_config.NumberColumn("単価", step=1000, format="%d"),
         }
     )
     st.session_state["product_master_df"] = product_master_df.copy()
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader(f"明細入力（最大 {MAX_DETAIL_ROWS} 行）")
+    st.subheader("見積明細（最大3行）")
 
-    detail_row_count = st.number_input(
-        "入力行数",
-        min_value=1,
-        max_value=MAX_DETAIL_ROWS,
-        value=min(len(st.session_state["quotation_rows"]), MAX_DETAIL_ROWS),
-        step=1
-    )
-
-    while len(st.session_state["quotation_rows"]) < detail_row_count:
-        st.session_state["quotation_rows"].append(
-            {
-                "マスタ選択": "自由入力",
-                "品名": "",
-                "仕様・備考": "",
-                "数量": 1,
-                "単位": "",
-                "単価": 0,
-                "行値引き": 0,
-            }
-        )
-
-    st.session_state["quotation_rows"] = st.session_state["quotation_rows"][:detail_row_count]
-
-    product_names = ["自由入力"]
-    if not product_master_df.empty and "商品名" in product_master_df.columns:
-        product_names += [str(x) for x in product_master_df["商品名"].fillna("").tolist() if str(x).strip()]
+    product_names = get_master_names(product_master_df)
+    select_options = [""] + product_names
 
     detail_rows = []
-    for i in range(detail_row_count):
+    for i in range(MAX_DETAIL_ROWS):
         base = st.session_state["quotation_rows"][i]
 
-        with st.container():
-            st.markdown(f"**明細 {i + 1}**")
-            c1, c2, c3, c4, c5, c6, c7 = st.columns([1.4, 2.0, 1.2, 1.0, 1.2, 1.2, 1.3])
+        st.markdown(f"**明細 {i + 1}**")
+        c1, c2, c3, c4, c5 = st.columns([2.0, 2.0, 1.0, 1.0, 1.3])
 
-            selected_master = c1.selectbox(
-                "マスタ",
-                options=product_names,
-                index=product_names.index(base.get("マスタ選択", "自由入力")) if base.get("マスタ選択", "自由入力") in product_names else 0,
-                key=f"q_master_{i}"
-            )
+        selected_name = c1.selectbox(
+            "商品選択",
+            options=select_options,
+            index=select_options.index(base.get("選択商品", "")) if base.get("選択商品", "") in select_options else 0,
+            key=f"q_select_{i}"
+        )
 
-            row_data = {
-                "マスタ選択": selected_master,
-                "品名": base.get("品名", ""),
-                "仕様・備考": base.get("仕様・備考", ""),
-                "数量": safe_int(base.get("数量", 1)),
-                "単位": base.get("単位", ""),
-                "単価": safe_int(base.get("単価", 0)),
-                "行値引き": safe_int(base.get("行値引き", 0)),
-            }
+        if selected_name:
+            row_data = apply_master_to_quote_row(selected_name, product_master_df)
+        else:
+            row_data = {"選択商品": "", "商品名": "", "数量": 1, "単位": "", "単価": 0}
 
-            row_data = apply_product_master_to_row(row_data, selected_master, product_master_df)
+        row_data["数量"] = c3.number_input(
+            "数量",
+            min_value=0,
+            value=safe_int(base.get("数量", row_data["数量"])) if selected_name == base.get("選択商品", "") else safe_int(row_data["数量"]),
+            step=1,
+            key=f"q_qty_{i}"
+        )
 
-            row_data["品名"] = c2.text_input("品名", value=row_data["品名"], key=f"q_name_{i}")
-            row_data["数量"] = c3.number_input("数量", min_value=0, value=safe_int(row_data["数量"]), step=1, key=f"q_qty_{i}")
-            row_data["単位"] = c4.text_input("単位", value=row_data["単位"], key=f"q_unit_{i}")
-            row_data["単価"] = c5.number_input("単価", min_value=0, value=safe_int(row_data["単価"]), step=1000, key=f"q_price_{i}")
-            row_data["行値引き"] = c6.number_input("行値引き", min_value=0, value=safe_int(row_data["行値引き"]), step=1000, key=f"q_discount_{i}")
-            row_amount = calculate_row_amount(row_data)
-            c7.metric("金額", format_yen(row_amount))
+        row_data["商品名"] = c2.text_input(
+            "商品名",
+            value=row_data["商品名"],
+            key=f"q_name_{i}",
+            disabled=True
+        )
 
-            row_data["仕様・備考"] = st.text_input(
-                "仕様・備考",
-                value=row_data["仕様・備考"],
-                key=f"q_spec_{i}"
-            )
+        row_data["単位"] = c4.text_input(
+            "単位",
+            value=row_data["単位"],
+            key=f"q_unit_{i}",
+            disabled=True
+        )
 
-            detail_rows.append(row_data)
-            st.session_state["quotation_rows"][i] = row_data
-            st.write("---")
+        c5.metric("金額", format_yen(calculate_quote_row_amount(row_data)))
+
+        st.session_state["quotation_rows"][i] = row_data
+        detail_rows.append(row_data)
+        st.write("---")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    subtotal_before_global_discount = sum(calculate_row_amount(r) for r in detail_rows)
-    subtotal_after_global_discount = max(subtotal_before_global_discount - safe_int(global_discount), 0)
-    tax_amount = int(round(subtotal_after_global_discount * (tax_rate_percent / 100)))
-    total_including_tax = subtotal_after_global_discount + tax_amount
+    used_rows = [r for r in detail_rows if str(r.get("商品名", "")).strip()]
+    subtotal = sum(calculate_quote_row_amount(r) for r in used_rows)
+    tax_amount = int(round(subtotal * (tax_rate_percent / 100)))
+    total_including_tax = subtotal + tax_amount
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("集計")
-    s1, s2, s3, s4 = st.columns(4)
-    s1.metric("小計（行値引き反映後）", format_yen(subtotal_before_global_discount))
-    s2.metric("全体値引き後税抜", format_yen(subtotal_after_global_discount))
-    s3.metric("消費税", format_yen(tax_amount))
-    s4.metric("合計（税込）", format_yen(total_including_tax))
+    s1, s2, s3 = st.columns(3)
+    s1.metric("税抜合計", format_yen(subtotal))
+    s2.metric("消費税", format_yen(tax_amount))
+    s3.metric("合計（税込）", format_yen(total_including_tax))
     st.markdown('</div>', unsafe_allow_html=True)
 
     preview_df = pd.DataFrame([
         {
-            "品名": r.get("品名", ""),
-            "仕様・備考": r.get("仕様・備考", ""),
+            "商品名": r.get("商品名", ""),
             "数量": safe_int(r.get("数量", 0)),
             "単位": r.get("単位", ""),
             "単価": safe_int(r.get("単価", 0)),
-            "行値引き": safe_int(r.get("行値引き", 0)),
-            "金額": calculate_row_amount(r),
+            "金額": calculate_quote_row_amount(r),
         }
-        for r in detail_rows
-        if str(r.get("品名", "")).strip() or safe_int(r.get("数量", 0)) > 0 or safe_int(r.get("単価", 0)) > 0
+        for r in used_rows
     ])
 
     st.subheader("プレビュー")
     if preview_df.empty:
-        st.info("明細を入力するとここにプレビューが表示されます。")
+        st.info("商品を選択するとここにプレビューが表示されます。")
     else:
         st.dataframe(preview_df, use_container_width=True, hide_index=True)
 
@@ -735,9 +703,8 @@ elif tool_choice == "💰 Quotation Generator":
                 "delivery_terms": delivery_terms,
                 "valid_until": valid_until,
                 "remarks": remarks,
-                "detail_rows": detail_rows,
-                "subtotal_before_global_discount": subtotal_before_global_discount,
-                "global_discount": global_discount,
+                "detail_rows": used_rows,
+                "subtotal": subtotal,
                 "tax_amount": tax_amount,
                 "total_including_tax": total_including_tax,
                 "my_company": st.session_state.get("my_company", "株式会社SonicAI"),
