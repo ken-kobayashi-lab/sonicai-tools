@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
+from openpyxl.utils import column_index_from_string, get_column_letter
 from pptx import Presentation
 from pptx.enum.shapes import PP_PLACEHOLDER
 
@@ -58,23 +59,23 @@ DEFAULT_PRODUCT_MASTER = [
     {"商品名": "搬入・設置費", "単位": "式", "単価": 100000},
 ]
 
-CONTACT_MASTER = {
-    "小林賢正": {
-        "name": "小林賢正",
-        "mail": "ken-kobayashi@sonicai.jp",
-        "tel": "080-8044-3236",
+DEFAULT_CONTACT_MASTER = [
+    {
+        "担当者名": "小林賢正",
+        "メール": "ken-kobayashi@sonicai.jp",
+        "TEL": "080-8044-3236",
     },
-    "田中寛之": {
-        "name": "田中寛之",
-        "mail": "hiro-tanaka@sonicai.jp",
-        "tel": "080-8044-3236",
+    {
+        "担当者名": "田中寛之",
+        "メール": "hiro-tanaka@sonicai.jp",
+        "TEL": "080-8044-3236",
     },
-    "nisikawa": {
-        "name": "nisikawa",
-        "mail": "hiro-tanaka@sonicai.jp",
-        "tel": "080-8044-3236",
+    {
+        "担当者名": "nisikawa",
+        "メール": "hiro-tanaka@sonicai.jp",
+        "TEL": "080-8044-3236",
     },
-}
+]
 
 # ==========================================
 # 2. session_state 初期化
@@ -87,11 +88,14 @@ def init_session_state():
         "my_name": "小林賢正",
         "my_mail": "ken-kobayashi@sonicai.jp",
         "my_tel": "080-8044-3236",
-        "selected_contact": "小林賢正",
+        "contact_selector": "小林賢正",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+    if "contact_master_df" not in st.session_state:
+        st.session_state["contact_master_df"] = pd.DataFrame(DEFAULT_CONTACT_MASTER)
 
     if "product_master_df" not in st.session_state:
         base_rows = DEFAULT_PRODUCT_MASTER.copy()
@@ -107,14 +111,34 @@ def init_session_state():
         ]
 
 
-def apply_contact_from_master(contact_key: str):
-    contact = CONTACT_MASTER.get(contact_key)
-    if not contact:
+def get_contact_names():
+    df = st.session_state.get("contact_master_df", pd.DataFrame())
+    if df.empty or "担当者名" not in df.columns:
+        return []
+
+    names = []
+    for name in df["担当者名"].fillna("").tolist():
+        s = str(name).strip()
+        if s:
+            names.append(s)
+    return names
+
+
+def apply_selected_contact():
+    selected_name = st.session_state.get("contact_selector", "")
+    df = st.session_state.get("contact_master_df", pd.DataFrame())
+
+    if df.empty or not selected_name:
         return
-    st.session_state["selected_contact"] = contact_key
-    st.session_state["my_name"] = contact["name"]
-    st.session_state["my_mail"] = contact["mail"]
-    st.session_state["my_tel"] = contact["tel"]
+
+    matched = df[df["担当者名"] == selected_name]
+    if matched.empty:
+        return
+
+    rec = matched.iloc[0]
+    st.session_state["my_name"] = str(rec.get("担当者名", "")).strip()
+    st.session_state["my_mail"] = str(rec.get("メール", "")).strip()
+    st.session_state["my_tel"] = str(rec.get("TEL", "")).strip()
 
 
 init_session_state()
@@ -138,29 +162,47 @@ def format_yen(value):
         return "¥0"
 
 
-def write_wrapped_text(ws, cell_ref, value):
-    ws[cell_ref] = value
-    if ws[cell_ref].alignment:
-        ws[cell_ref].alignment = copy(ws[cell_ref].alignment)
-        ws[cell_ref].alignment = Alignment(
-            horizontal=ws[cell_ref].alignment.horizontal,
+def resolve_merged_anchor(ws, cell_ref: str) -> str:
+    """
+    指定セルが結合セル範囲内なら、その左上セルを返す。
+    結合されていなければそのまま返す。
+    """
+    for merged_range in ws.merged_cells.ranges:
+        if cell_ref in merged_range:
+            return merged_range.start_cell.coordinate
+    return cell_ref
+
+
+def set_excel_value(ws, cell_ref: str, value):
+    """
+    結合セル対策付きで安全に値を書き込む。
+    """
+    anchor = resolve_merged_anchor(ws, cell_ref)
+    ws[anchor] = value
+
+
+def set_excel_wrapped_text(ws, cell_ref: str, value):
+    anchor = resolve_merged_anchor(ws, cell_ref)
+    ws[anchor] = value
+
+    if ws[anchor].alignment:
+        ws[anchor].alignment = copy(ws[anchor].alignment)
+        ws[anchor].alignment = Alignment(
+            horizontal=ws[anchor].alignment.horizontal,
             vertical="top",
-            text_rotation=ws[cell_ref].alignment.textRotation,
+            text_rotation=ws[anchor].alignment.textRotation,
             wrap_text=True,
-            shrink_to_fit=ws[cell_ref].alignment.shrinkToFit,
-            indent=ws[cell_ref].alignment.indent,
+            shrink_to_fit=ws[anchor].alignment.shrinkToFit,
+            indent=ws[anchor].alignment.indent,
         )
     else:
-        ws[cell_ref].alignment = Alignment(vertical="top", wrap_text=True)
+        ws[anchor].alignment = Alignment(vertical="top", wrap_text=True)
 
 
 def clear_detail_row(ws, row_idx):
-    # B:E が結合セルの想定
-    ws[f"B{row_idx}"] = None
-    ws[f"F{row_idx}"] = None
-    ws[f"G{row_idx}"] = None
-    ws[f"H{row_idx}"] = None
-    ws[f"I{row_idx}"] = None
+    for col in ["B", "F", "G", "H", "I"]:
+        anchor = resolve_merged_anchor(ws, f"{col}{row_idx}")
+        ws[anchor] = None
 
 
 def fill_placeholder(slide, ph_type_idx, content, is_image=False, img_file=None):
@@ -325,24 +367,21 @@ def generate_quotation_excel(data):
 
     ws = wb["見積書"]
 
-    # 客先会社名（既存位置維持）
-    ws["B6"] = data["customer_name"]
+    # 指定セルへ書き込み（結合セルなら左上へ自動補正）
+    set_excel_value(ws, "B6", data["customer_name"])
+    set_excel_value(ws, "I1", data["quote_date_str"])
+    set_excel_value(ws, "I2", data["quote_no"])
+    set_excel_value(ws, "H3", data["payment_terms"])
+    set_excel_value(ws, "C10", data["subject"])
+    set_excel_value(ws, "C11", data["delivery_terms"])
+    set_excel_value(ws, "C13", data["valid_until"])
 
-    # 指定セル
-    ws["I1"] = data["quote_date_str"]
-    ws["I2"] = data["quote_no"]
-    ws["H3"] = data["payment_terms"]
-    ws["C10"] = data["subject"]
-    ws["C11"] = data["delivery_terms"]
-    ws["C13"] = data["valid_until"]
-
-    # 発行者情報
-    ws["H8"] = data["my_company"]
-    ws["H10"] = f"〒{data['my_zip']}"
-    ws["H11"] = data["my_address"]
-    ws["H12"] = data["my_name"]
-    ws["H13"] = f"mail：{data['my_mail']}"
-    ws["H14"] = f"TEL：{data['my_tel']}"
+    set_excel_value(ws, "H8", data["my_company"])
+    set_excel_value(ws, "H10", f"〒{data['my_zip']}")
+    set_excel_value(ws, "H11", data["my_address"])
+    set_excel_value(ws, "H12", data["my_name"])
+    set_excel_value(ws, "H13", f"mail：{data['my_mail']}")
+    set_excel_value(ws, "H14", f"TEL：{data['my_tel']}")
 
     # 明細クリア
     for r in range(DETAIL_START_ROW, DETAIL_END_ROW + 1):
@@ -354,25 +393,25 @@ def generate_quotation_excel(data):
         row_no = DETAIL_START_ROW + idx
         row_amount = calculate_quote_row_amount(item)
 
-        write_wrapped_text(ws, f"B{row_no}", item.get("商品名", ""))
-        ws[f"F{row_no}"] = safe_int(item.get("数量", 0))
-        ws[f"G{row_no}"] = item.get("単位", "")
-        ws[f"H{row_no}"] = safe_int(item.get("単価", 0))
-        ws[f"I{row_no}"] = row_amount
+        set_excel_wrapped_text(ws, f"B{row_no}", item.get("商品名", ""))
+        set_excel_value(ws, f"F{row_no}", safe_int(item.get("数量", 0)))
+        set_excel_value(ws, f"G{row_no}", item.get("単位", ""))
+        set_excel_value(ws, f"H{row_no}", safe_int(item.get("単価", 0)))
+        set_excel_value(ws, f"I{row_no}", row_amount)
 
     subtotal = safe_int(data["subtotal"])
     tax_amount = safe_int(data["tax_amount"])
     total_including_tax = safe_int(data["total_including_tax"])
 
-    ws["I28"] = subtotal
-    ws["I29"] = tax_amount
-    ws["I30"] = total_including_tax
+    set_excel_value(ws, "I28", subtotal)
+    set_excel_value(ws, "I29", tax_amount)
+    set_excel_value(ws, "I30", total_including_tax)
 
     # 税抜合計表示
-    ws["C15"] = subtotal
+    set_excel_value(ws, "C15", subtotal)
 
-    # 備考欄
-    write_wrapped_text(ws, "B33", data["remarks"])
+    # 備考
+    set_excel_wrapped_text(ws, "B33", data["remarks"])
 
     output = io.BytesIO()
     wb.save(output)
@@ -473,13 +512,34 @@ with st.sidebar:
 
     elif current_tab == "Settings":
         st.subheader("👤 Creator Info")
-        selected_contact = st.selectbox(
-            "担当者マスタ",
-            options=list(CONTACT_MASTER.keys()),
-            index=list(CONTACT_MASTER.keys()).index(st.session_state.get("selected_contact", "小林賢正")),
-            key="selected_contact",
+
+        contact_master_df = st.data_editor(
+            st.session_state["contact_master_df"],
+            num_rows="dynamic",
+            use_container_width=True,
+            key="contact_master_editor",
+            column_config={
+                "担当者名": st.column_config.TextColumn("担当者名"),
+                "メール": st.column_config.TextColumn("メール"),
+                "TEL": st.column_config.TextColumn("TEL"),
+            }
         )
-        apply_contact_from_master(selected_contact)
+        st.session_state["contact_master_df"] = contact_master_df.copy()
+
+        contact_names = get_contact_names()
+        if not contact_names:
+            contact_names = [""]
+
+        current_selected = st.session_state.get("contact_selector", "")
+        if current_selected not in contact_names:
+            st.session_state["contact_selector"] = contact_names[0]
+
+        st.selectbox(
+            "担当者マスタ",
+            options=contact_names,
+            key="contact_selector",
+            on_change=apply_selected_contact,
+        )
 
         st.text_input("Company", key="my_company")
         st.text_input("Zip Code", key="my_zip")
@@ -490,7 +550,7 @@ with st.sidebar:
         st.caption("Settings are used for report / quotation output.")
 
     st.write("---")
-    st.caption("SonicAI Inc. v2.1")
+    st.caption("SonicAI Inc. v2.2")
 
 # ==========================================
 # 8. メインコンテンツ
