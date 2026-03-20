@@ -371,7 +371,7 @@ def generate_quotation_excel(data):
     set_excel_value(ws, "B6", data["customer_name"])
     set_excel_value(ws, "I1", data["quote_date_str"])
     set_excel_value(ws, "I2", data["quote_no"])
-    set_excel_value(ws, "H3", data["payment_terms"])
+    set_excel_value(ws, "C12", data["payment_terms"])
     set_excel_value(ws, "C10", data["subject"])
     set_excel_value(ws, "C11", data["delivery_terms"])
     set_excel_value(ws, "C13", data["valid_until"])
