@@ -8,7 +8,6 @@ import plotly.graph_objects as go
 import streamlit as st
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
-from openpyxl.utils import column_index_from_string, get_column_letter
 from pptx import Presentation
 from pptx.enum.shapes import PP_PLACEHOLDER
 
@@ -163,10 +162,6 @@ def format_yen(value):
 
 
 def resolve_merged_anchor(ws, cell_ref: str) -> str:
-    """
-    指定セルが結合セル範囲内なら、その左上セルを返す。
-    結合されていなければそのまま返す。
-    """
     for merged_range in ws.merged_cells.ranges:
         if cell_ref in merged_range:
             return merged_range.start_cell.coordinate
@@ -174,9 +169,6 @@ def resolve_merged_anchor(ws, cell_ref: str) -> str:
 
 
 def set_excel_value(ws, cell_ref: str, value):
-    """
-    結合セル対策付きで安全に値を書き込む。
-    """
     anchor = resolve_merged_anchor(ws, cell_ref)
     ws[anchor] = value
 
@@ -367,7 +359,6 @@ def generate_quotation_excel(data):
 
     ws = wb["見積書"]
 
-    # 指定セルへ書き込み（結合セルなら左上へ自動補正）
     set_excel_value(ws, "B6", data["customer_name"])
     set_excel_value(ws, "I1", data["quote_date_str"])
     set_excel_value(ws, "I2", data["quote_no"])
@@ -383,11 +374,9 @@ def generate_quotation_excel(data):
     set_excel_value(ws, "H13", f"mail：{data['my_mail']}")
     set_excel_value(ws, "H14", f"TEL：{data['my_tel']}")
 
-    # 明細クリア
     for r in range(DETAIL_START_ROW, DETAIL_END_ROW + 1):
         clear_detail_row(ws, r)
 
-    # 明細書き込み
     detail_rows = data["detail_rows"][:MAX_DETAIL_ROWS]
     for idx, item in enumerate(detail_rows):
         row_no = DETAIL_START_ROW + idx
@@ -407,10 +396,7 @@ def generate_quotation_excel(data):
     set_excel_value(ws, "I29", tax_amount)
     set_excel_value(ws, "I30", total_including_tax)
 
-    # 税抜合計表示
     set_excel_value(ws, "C15", subtotal)
-
-    # 備考
     set_excel_wrapped_text(ws, "B33", data["remarks"])
 
     output = io.BytesIO()
@@ -550,7 +536,7 @@ with st.sidebar:
         st.caption("Settings are used for report / quotation output.")
 
     st.write("---")
-    st.caption("SonicAI Inc. v2.2")
+    st.caption("SonicAI Inc. v2.3")
 
 # ==========================================
 # 8. メインコンテンツ
@@ -738,41 +724,53 @@ elif tool_choice == "💰 Quotation Generator":
             key=f"q_select_{i}"
         )
 
+        # 行データ生成
         if selected_name:
             row_data = apply_master_to_quote_row(selected_name, product_master_df)
         else:
             row_data = {"選択商品": "", "商品名": "", "数量": 1, "単位": "", "単価": 0}
 
+        # 数量だけユーザー入力を保持
+        qty_default = safe_int(base.get("数量", row_data["数量"])) if selected_name == base.get("選択商品", "") else safe_int(row_data["数量"])
         row_data["数量"] = c3.number_input(
             "数量",
             min_value=0,
-            value=safe_int(base.get("数量", row_data["数量"])) if selected_name == base.get("選択商品", "") else safe_int(row_data["数量"]),
+            value=qty_default,
             step=1,
             key=f"q_qty_{i}"
         )
 
-        row_data["商品名"] = c2.text_input(
+        # 表示だけ。戻り値で row_data を上書きしない
+        c2.text_input(
             "商品名",
             value=row_data["商品名"],
-            key=f"q_name_{i}",
+            key=f"q_name_display_{i}_{selected_name}",
             disabled=True
         )
 
-        row_data["単位"] = c4.text_input(
+        c4.text_input(
             "単位",
             value=row_data["単位"],
-            key=f"q_unit_{i}",
+            key=f"q_unit_display_{i}_{selected_name}",
             disabled=True
         )
 
         c5.metric("金額", format_yen(calculate_quote_row_amount(row_data)))
 
+        # 最新状態を保存
         st.session_state["quotation_rows"][i] = row_data
         detail_rows.append(row_data)
         st.write("---")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    used_rows = [r for r in detail_rows if str(r.get("商品名", "")).strip()]
+    # 商品名ではなく「選択商品 or 商品名 or 単価」で判定
+    used_rows = [
+        r for r in detail_rows
+        if str(r.get("選択商品", "")).strip()
+        or str(r.get("商品名", "")).strip()
+        or safe_int(r.get("単価", 0)) != 0
+    ]
+
     subtotal = sum(calculate_quote_row_amount(r) for r in used_rows)
     tax_amount = int(round(subtotal * (tax_rate_percent / 100)))
     total_including_tax = subtotal + tax_amount
